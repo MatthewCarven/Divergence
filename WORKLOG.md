@@ -18,7 +18,9 @@ Matthew wanted the verbs and adjectives randomised more, along the lines of
 - Checked: 200k generated lines, no article errors, no "X, THEN X" repeats. The
   longest new line is 70 chars (existing max 74). Average line +1.6 chars. Runs in
   the browser with no console errors.
-- Build label left at 0.06. Not a git repo yet.
+- Build label left at 0.06.
+- Became a git repo the same day: https://github.com/MatthewCarven/Divergence (`main`). The
+  first commit is the untouched 0.06, so `git diff 2310d78` shows everything above.
 
 ## 2026-11-01 — labels no longer overlap
 
