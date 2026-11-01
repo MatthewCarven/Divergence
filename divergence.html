@@ -189,6 +189,8 @@ function ri(a, b) { return Math.floor(rand(a, b + 1)); }
 function pick(arr) { return arr[(Math.random() * arr.length) | 0]; }
 function pad(n, w) { n = String(n); while (n.length < w) n = '0' + n; return n; }
 function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+// article by first letter — keep 'HOUR' and 'UNIQUE' out of the word lists
+function an(s) { return (/^[AEIOU]/.test(s) ? 'AN ' : 'A ') + s; }
 
 /* ============================================================
    COPY GENERATOR
@@ -207,7 +209,26 @@ var WITHHELD = ['WITHDRAWN','WITHHELD','UNSPOKEN','REFUSED','DEFERRED','UNANSWER
 var EMO_VERBS = ['WEEPS','LAUGHS ALONE','HESITATES','LIES GENTLY','FORGIVES',
   'REFUSES TO SPEAK','HOLDS THEIR BREATH','SAYS A NAME ALOUD','SITS WITHOUT MOVING',
   'APOLOGISES TO NO ONE','BEGINS TO SHAKE','STOPS PRETENDING','ANSWERS HONESTLY',
-  'LOOKS AWAY FIRST','STAYS'];
+  'LOOKS AWAY FIRST','STAYS','FORGETS','FALTERS','GOES QUIET','CHANGES THEIR MIND',
+  'LOSES COUNT','TELLS THE TRUTH','LOOKS AT THE DOOR','CLOSES THEIR EYES','SMILES',
+  'FREEZES','LEAVES EARLY','MISSPEAKS','STOPS LISTENING','REMEMBERS','WAVERS',
+  'RELENTS','THINKS OF SOMEONE ELSE','CHECKS THE TIME','SAYS NOTHING','MISHEARS',
+  'AGREES TOO QUICKLY','LAUGHS AT THE WRONG MOMENT'];
+
+// the occasions things happen during
+var MOMENT_ADJ = ['IMPORTANT','IRREVERSIBLE','ORDINARY','PRIVATE','LONG-AWAITED',
+  'OVERDUE','MINOR','FINAL','HURRIED','CAREFUL','SMALL','UNRECORDED','ROUTINE',
+  'DIFFICULT','QUIET','UNREMARKABLE','UNEXPECTED','SECOND','BRIEF','POLITE','FAMILY'];
+
+var MOMENTS = ['DECISION','CONVERSATION','GOODBYE','VOTE','INTERVIEW','ARGUMENT',
+  'PHONE CALL','NEGOTIATION','CEREMONY','DINNER','HANDOVER','APOLOGY','COUNTDOWN',
+  'REHEARSAL','VIGIL','REUNION','JOURNEY','TOAST','EXAM','PRAYER'];
+
+var MOMENT_FATES = ['CUT SHORT','ABANDONED HALFWAY','NEVER FINISHED','INTERRUPTED',
+  'POSTPONED INDEFINITELY','CONCLUDED EARLY','OVERHEARD','RESUMED','REHEARSED ALONE',
+  'REMEMBERED WRONGLY','HELD IN SILENCE','LEFT UNRESOLVED','REPEATED WORD FOR WORD'];
+
+function occasion() { return an(pick(MOMENT_ADJ) + ' ' + pick(MOMENTS)); }
 
 var MICRO = ['A PARKED CAR','A STAIRWELL','A HOSPITAL CORRIDOR','A LOCKED ROOM',
   'A SUPERMARKET AISLE','A RENTED KITCHEN','A WAITING ROOM','THE DARK',
@@ -275,8 +296,15 @@ function timing() {
 }
 
 var EMO_TEMPLATES = [
-  function () { return 'A ' + pick(NOUNS) + ' ' + pick(WITHHELD); },
+  function () { return an(pick(NOUNS)) + ' ' + pick(WITHHELD); },
   function () { return 'SUBJECT ' + pick(EMO_VERBS) + ' IN ' + pick(MICRO); },
+  function () { return 'SUBJECT ' + pick(EMO_VERBS) + ' DURING ' + occasion(); },
+  function () { return occasion() + ', ' + pick(MOMENT_FATES); },
+  function () {
+    var a = pick(EMO_VERBS), b;
+    do b = pick(EMO_VERBS); while (b === a);
+    return 'SUBJECT ' + a + ', THEN ' + b;
+  },
   function () { return pick(FEELINGS) + ' ' + pick(FEEL_STATES) + ', ' + duration(); },
   function () { return 'THE ' + pick(NOUNS) + ' IS ' + pick(WITHHELD); },
   function () { return 'SUBJECT DREAMS OF ' + pick(DREAMS); },
@@ -288,7 +316,8 @@ var LOG_TEMPLATES = [
   function () { return pick(DOCS) + ' ' + pick(DEC) + ' — ' + timing(); },
   function () { return 'SUBJECT ' + pick(LOG_VERBS) + ' THE ' + pick(LOG_OBJS); },
   function () { return 'SUBJECT ' + pick(LOG_VERBS) + ' THE ' + pick(LOG_OBJS) + ', ' + timing(); },
-  function () { return 'A ' + pick(NOUNS) + ' ' + pick(DEC) + ' ' + timing(); },
+  function () { return an(pick(NOUNS)) + ' ' + pick(DEC) + ' ' + timing(); },
+  function () { return pick(MOMENTS) + ' ' + pick(MOMENT_FATES) + ' — ' + timing(); },
   function () { return 'SUBJECT COUNTS TO ' + ri(3, 400) + ' AND STOPS'; },
   function () { return pick(DOCS) + ' ' + pick(DEC) + ' BY A THIRD PARTY'; }
 ];
@@ -634,7 +663,35 @@ function drawFrame(t) {
   drawHUD();
 }
 
+var LABEL_GAP = 10;          // clear space kept between two label blocks, in u
+
+function collides(b, y, placed) {
+  var g = LABEL_GAP * u;
+  for (var i = 0; i < placed.length; i++) {
+    var p = placed[i];
+    if (b.x < p.x + p.w + g && p.x < b.x + b.w + g &&
+        y < p.y + p.h + g && p.y < y + b.h + g) return true;
+  }
+  return false;
+}
+
+// nearest height to the one it wanted where a label clears all the older ones
+function findRoom(b, want, placed) {
+  var g = LABEL_GAP * u, lo = 16, hi = Math.max(16, H - b.h - 16);
+  var cands = [want];
+  for (var i = 0; i < placed.length; i++) {
+    cands.push(placed[i].y - b.h - g, placed[i].y + placed[i].h + g);
+  }
+  cands.sort(function (p, q) { return Math.abs(p - want) - Math.abs(q - want); });
+  for (var c = 0; c < cands.length; c++) {
+    var y = clamp(cands[c], lo, hi);
+    if (!collides(b, y, placed)) return y;
+  }
+  return clamp(want, lo, hi);
+}
+
 function drawLabels(rot, breathe) {
+  var placed = [];           // older labels go first and keep their ground
   for (var i = 0; i < labels.length; i++) {
     var L = labels[i];
     var age = clock - L.born;
@@ -647,13 +704,6 @@ function drawLabels(rot, breathe) {
 
     var lineA = wipe * fout;
     var alpha = fin * fout;
-    if (lineA <= 0.001 && alpha <= 0.001) continue;
-
-    // peak tip
-    var a = L.bin / BINS * TAU - Math.PI / 2 + rot;
-    var h = (disp[L.bin] + residue[L.bin]) * (0.48 + 0.52 * hf[L.bin]);
-    var rr = R * breathe * (1 + wob[L.bin]) + h;
-    var tx = cx + Math.cos(a) * rr, ty = cy + Math.sin(a) * rr;
 
     // text metrics
     var s1 = 11.5 * u, s2 = 21 * u, s3 = 16.5 * u, s4 = 10.5 * u;
@@ -692,6 +742,27 @@ function drawLabels(rot, breathe) {
     else lx = cx - maxW / 2;
     lx = clamp(lx, 14, Math.max(14, W - maxW - 14));
     var ly = clamp(slotY - blockH / 2, 16, Math.max(16, H - blockH - 16));
+
+    // Step around older labels. The offset is settled while the label is
+    // still invisible and then kept, so nothing slides once it is on screen.
+    // Held in R so it survives a resize; re-settled only if that collides.
+    var box = { x: lx, w: maxW, h: blockH };
+    var want = ly;
+    if (L.shift !== undefined) ly = clamp(want + L.shift * R, 16, Math.max(16, H - blockH - 16));
+    if (L.shift === undefined || collides(box, ly, placed)) {
+      ly = findRoom(box, want, placed);
+      L.shift = R > 0 ? (ly - want) / R : undefined;   // no ring yet, settle again later
+    }
+    box.y = ly;
+    placed.push(box);
+
+    if (lineA <= 0.001 && alpha <= 0.001) continue;
+
+    // peak tip
+    var a = L.bin / BINS * TAU - Math.PI / 2 + rot;
+    var h = (disp[L.bin] + residue[L.bin]) * (0.48 + 0.52 * hf[L.bin]);
+    var rr = R * breathe * (1 + wob[L.bin]) + h;
+    var tx = cx + Math.cos(a) * rr, ty = cy + Math.sin(a) * rr;
 
     // ---- leader line ----
     var ax = L.side === 'left' ? lx + maxW + 16 * u : lx - 16 * u;
