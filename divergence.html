@@ -1,0 +1,1068 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DIVERGENCE — 'SOLOMON' BUILD 0.06</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%; width: 100%;
+    overflow: hidden; background: #050506;
+  }
+  #stage {
+    position: fixed; inset: 0; background: #050506;
+    transition: background 900ms ease;
+    cursor: crosshair;
+  }
+  #stage.light { background: #f2f1ee; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  #glow { opacity: .5; filter: blur(7px); }
+  #stage.light #glow { opacity: .38; }
+  #grain {
+    position: absolute; inset: -60px; pointer-events: none;
+    opacity: .055; mix-blend-mode: screen;
+    background-repeat: repeat;
+    animation: drift 900ms steps(4) infinite;
+  }
+  #stage.light #grain { mix-blend-mode: multiply; opacity: .07; }
+  #grain.off { display: none; }
+  @keyframes drift {
+    0%   { transform: translate(0,0); }
+    25%  { transform: translate(-13px, 7px); }
+    50%  { transform: translate(9px, -11px); }
+    75%  { transform: translate(-6px, -5px); }
+    100% { transform: translate(0,0); }
+  }
+  #vig {
+    position: absolute; inset: 0; pointer-events: none;
+    background: radial-gradient(ellipse at 50% 50%, rgba(0,0,0,0) 45%, rgba(0,0,0,.55) 100%);
+  }
+  #stage.light #vig {
+    background: radial-gradient(ellipse at 50% 50%, rgba(255,255,255,0) 48%, rgba(120,118,112,.28) 100%);
+  }
+  #ctl {
+    position: absolute; left: 50%; bottom: 22px; transform: translateX(-50%) translateY(10px);
+    display: flex; gap: 6px; align-items: center;
+    opacity: 0; pointer-events: none;
+    transition: opacity 420ms ease, transform 420ms ease;
+    font: 600 10px/1 'Arial Narrow', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    letter-spacing: .16em;
+    z-index: 20;
+  }
+  #ctl.show { opacity: 1; pointer-events: auto; transform: translateX(-50%) translateY(0); }
+  #ctl button {
+    appearance: none; border: 1px solid rgba(240,240,238,.22);
+    background: rgba(12,12,14,.55); color: rgba(240,240,238,.72);
+    padding: 7px 11px 6px; border-radius: 1px; cursor: pointer;
+    font: inherit; letter-spacing: .16em; text-transform: uppercase;
+    backdrop-filter: blur(6px);
+    transition: color 160ms, border-color 160ms, background 160ms;
+    white-space: nowrap;
+  }
+  #ctl button:hover { color: #fff; border-color: rgba(240,240,238,.55); background: rgba(30,30,34,.7); }
+  #ctl button.on { color: #fff; border-color: rgba(240,240,238,.7); background: rgba(52,52,58,.8); }
+  #stage.light #ctl button {
+    border-color: rgba(20,20,20,.22); background: rgba(255,255,255,.6); color: rgba(20,20,20,.7);
+  }
+  #stage.light #ctl button:hover { color: #000; border-color: rgba(20,20,20,.55); }
+  #stage.light #ctl button.on { color: #000; border-color: rgba(20,20,20,.7); background: rgba(255,255,255,.95); }
+  #toast {
+    position: absolute; left: 50%; bottom: 62px; transform: translateX(-50%);
+    font: 600 10px/1 'Arial Narrow', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    letter-spacing: .2em; text-transform: uppercase;
+    color: rgba(240,240,238,.8); background: rgba(12,12,14,.7);
+    border: 1px solid rgba(240,240,238,.25);
+    padding: 8px 14px 7px; border-radius: 1px;
+    opacity: 0; pointer-events: none; transition: opacity 260ms ease;
+    backdrop-filter: blur(6px); z-index: 30; white-space: nowrap;
+  }
+  #toast.show { opacity: 1; }
+  #stage.light #toast {
+    color: rgba(20,20,20,.85); background: rgba(255,255,255,.8); border-color: rgba(20,20,20,.25);
+  }
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="glow"></canvas>
+  <canvas id="main"></canvas>
+  <div id="grain"></div>
+  <div id="vig"></div>
+  <div id="toast"></div>
+  <div id="ctl">
+    <button id="bTempo">TEMPO · STEADY</button>
+    <button id="bLabels">LABELS · ON</button>
+    <button id="bPolarity">POLARITY · NEG</button>
+    <button id="bGrain">GRAIN · ON</button>
+    <button id="bPulse">FORCE DIVERGENCE</button>
+    <button id="bHold" title="Space">HOLD</button>
+    <button id="bShot" title="Copy PNG to clipboard">CAPTURE</button>
+    <button id="bFull">FULLSCREEN</button>
+  </div>
+</div>
+<script>
+(function () {
+'use strict';
+
+/* ============================================================
+   'SOLOMON' BUILD 0.06 — DIVERGENCE MONITOR
+   A generative wallpaper. The ring is the world. The spikes are
+   moments where somebody, somewhere, does something. The system
+   sees all of it and none of it changes anything.
+   ============================================================ */
+
+var TAU = Math.PI * 2;
+var BINS = 2400;
+
+var stage = document.getElementById('stage');
+var mainCv = document.getElementById('main');
+var glowCv = document.getElementById('glow');
+var grainEl = document.getElementById('grain');
+var mctx = mainCv.getContext('2d');
+var gctx = glowCv.getContext('2d');
+var GS = 0.42;               // glow canvas render scale
+
+var W = 0, H = 0, cx = 0, cy = 0, R = 0, dpr = 1, u = 1;
+
+/* ---------- state ---------- */
+var target   = new Float32Array(BINS);  // event energy, decays
+var disp     = new Float32Array(BINS);  // smoothed displacement
+var residue  = new Float32Array(BINS);  // slow ghost, the drawing's memory
+var wob      = new Float32Array(BINS);  // hand-drawn base wobble
+var fine     = new Float32Array(BINS);  // per-bin pen jitter
+var hf       = new Float32Array(BINS);  // frozen high-freq jag profile
+var pend     = new Float32Array(BINS);  // energy staged, not yet arrived
+var arriveAt = new Float32Array(BINS);  // clock time this bin receives it
+
+// Frozen texture noise. Charcoal sits still on paper — it does not fizz.
+// These drift slowly rather than re-rolling every frame.
+var hairPh = new Float32Array(BINS);    // hair breathing phase
+var hairRt = new Float32Array(BINS);    // hair breathing rate
+var stipOn = new Float32Array(BINS);    // grain membership roll
+var stipR  = new Float32Array(BINS);    // grain height along the spike
+var stipSz = new Float32Array(BINS);    // grain size
+var stipA  = new Uint8Array(BINS);      // grain alpha bucket
+
+// The decision is instantaneous. The universe takes a moment to show it.
+var RISE = 2.1;                         // per-bin rise rate — ~1.1s to 90%
+
+function stage_(i, val, when) {
+  if (val > pend[i]) { pend[i] = val; arriveAt[i] = when; }
+}
+
+var labels = [];
+var clock = 0;              // seconds since load
+var sysEpoch = Date.UTC(2039, 3, 17, 9, 14, 22) / 1000;
+var nextEventAt = 0;
+var observed = 0;
+var fidelity = 99.9982;
+var flash = 0;
+
+var TEMPOS = {
+  RARE:     [95, 240],
+  STEADY:   [26, 72],
+  RESTLESS: [7, 19]
+};
+var TEMPO_ORDER = ['RARE', 'STEADY', 'RESTLESS'];
+
+var state = {
+  tempo: 'STEADY',
+  labels: true,
+  light: false,
+  grain: true
+};
+
+try {
+  var saved = JSON.parse(localStorage.getItem('solomon.v1') || '{}');
+  for (var k in saved) if (k in state) state[k] = saved[k];
+} catch (e) {}
+
+function persist() {
+  try { localStorage.setItem('solomon.v1', JSON.stringify(state)); } catch (e) {}
+}
+
+/* ---------- small helpers ---------- */
+function rand(a, b) { return a + Math.random() * (b - a); }
+function ri(a, b) { return Math.floor(rand(a, b + 1)); }
+function pick(arr) { return arr[(Math.random() * arr.length) | 0]; }
+function pad(n, w) { n = String(n); while (n.length < w) n = '0' + n; return n; }
+function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+
+/* ============================================================
+   COPY GENERATOR
+   Combinatorial so it effectively never repeats. Everything is
+   an action, a decision, or a thought — somewhere, by someone.
+   ============================================================ */
+
+var NOUNS = ['PROMISE','NAME','DOOR','LETTER','HAND','DEBT','MEMORY','SILENCE','SONG',
+  'PHOTOGRAPH','KEY','SCAR','VOICE','NUMBER','APOLOGY','INVITATION','CONFESSION',
+  'THRESHOLD','ANSWER','RECORDING','BIRTHDAY','ADDRESS','WARNING','GIFT','VERDICT'];
+
+var WITHHELD = ['WITHDRAWN','WITHHELD','UNSPOKEN','REFUSED','DEFERRED','UNANSWERED',
+  'ERASED','BURIED','REPEATED','MISREMEMBERED','RETURNED UNOPENED','LEFT UNLOCKED',
+  'NEVER SENT','SAID TWICE','FORGOTTEN ON PURPOSE'];
+
+var EMO_VERBS = ['WEEPS','LAUGHS ALONE','HESITATES','LIES GENTLY','FORGIVES',
+  'REFUSES TO SPEAK','HOLDS THEIR BREATH','SAYS A NAME ALOUD','SITS WITHOUT MOVING',
+  'APOLOGISES TO NO ONE','BEGINS TO SHAKE','STOPS PRETENDING','ANSWERS HONESTLY',
+  'LOOKS AWAY FIRST','STAYS'];
+
+var MICRO = ['A PARKED CAR','A STAIRWELL','A HOSPITAL CORRIDOR','A LOCKED ROOM',
+  'A SUPERMARKET AISLE','A RENTED KITCHEN','A WAITING ROOM','THE DARK',
+  'A CROWDED CARRIAGE','AN EMPTY OFFICE','A CHURCH WITH NO SERVICE',
+  'THE PASSENGER SEAT','A HOTEL BATHROOM','A CHILDHOOD BEDROOM','THE RAIN',
+  'A LIFT BETWEEN FLOORS','A CAR PARK AT 04:00'];
+
+var FEELINGS = ['GRIEF','SHAME','RELIEF','JEALOUSY','TENDERNESS','DREAD','JOY',
+  'REGRET','RESOLVE','LONGING','FEAR','GRATITUDE','RAGE','DOUBT','HOPE','NOSTALGIA'];
+
+var FEEL_STATES = ['SURFACES','RETURNS','INVERTS','EXCEEDS THRESHOLD','RESOLVES',
+  'FAILS TO RESOLVE','PROPAGATES','DECAYS','HOLDS','ARRIVES EARLY','WILL NOT SETTLE'];
+
+var DREAMS = ['A ROOM NEVER ENTERED','A FACE WITHOUT A NAME','THE SEA, INLAND',
+  'A HOUSE THAT WAS SOLD','SOMEONE STILL LIVING','A DOOR THAT OPENS INWARD',
+  'THEIR OWN VOICE, YOUNGER','A CITY WITH NO NAME','THE MORNING OF A DAY THAT DID NOT HAPPEN'];
+
+var DOCS = ['RESIGNATION','CONTRACT','TESTIMONY','TRANSFER','DIAGNOSIS','ITINERARY',
+  'WILL','REFERRAL','APPEAL','BALLOT','CLAIM','NOTICE','LEASE','DECLARATION'];
+
+var DEC = ['DECLINED','SIGNED','REVERSED','FILED','SHREDDED','POSTPONED','AMENDED',
+  'ACCEPTED','WITHDRAWN','BACKDATED','READ TWICE'];
+
+var LOG_VERBS = ['SELECTS','REJECTS','DELETES','RECOUNTS','REROUTES','OVERRIDES',
+  'IGNORES','RECALCULATES','TURNS BACK AT','DOUBLES BACK TO','ABANDONS'];
+
+var LOG_OBJS = ['LONGER ROUTE','OPTIMAL PATH','FINAL MESSAGE','EMERGENCY EXIT',
+  'THIRD OPTION','SAFETY MARGIN','THRESHOLD','LAST INSTRUCTION','OFFERED TERMS',
+  'AGREED PLAN','ONLY COPY','SHORTER SENTENCE'];
+
+var ORDINALS = ['SECOND','THIRD','FOURTH','FIFTH','SEVENTH','NINTH','ELEVENTH',
+  'THIRTEENTH','SEVENTEENTH','NINETEENTH','TWENTY-THIRD','THIRTY-FIRST'];
+
+var CITIES = ['REYKJAVÍK','OSAKA','LAGOS','MONTEVIDEO','TROMSØ','CHENGDU','PORTO',
+  'HOBART','ULAANBAATAR','MARSEILLE','IQALUIT','VALPARAÍSO','GDAŃSK','KOCHI',
+  'WHITEHORSE','TBILISI','PALERMO','DUNEDIN','SALVADOR','TALLINN','ASMARA','NAPIER',
+  'ARKHANGELSK','MERIDA','GALWAY','BUSAN','TARTU','ANTOFAGASTA','THUNDER BAY','HUE'];
+
+function ordinal() { return pick(ORDINALS); }
+
+function duration() {
+  return pick([
+    ordinal() + ' YEAR',
+    ri(2, 40) + ' YEARS DORMANT',
+    'AFTER ' + ri(3, 900) + ' DAYS',
+    'UNSCHEDULED',
+    ri(2, 19) + ' MINUTES EARLY',
+    'AHEAD OF MODEL',
+    'ON THE PREDICTED DAY',
+    'OUT OF SEQUENCE'
+  ]);
+}
+
+function timing() {
+  return pick([
+    ri(2, 14) + ' YEARS EARLY',
+    'AGAINST MODEL',
+    'OUTSIDE PREDICTED WINDOW',
+    'ON SCHEDULE',
+    'WITHOUT RECORD',
+    ri(3, 58) + ' MINUTES AHEAD OF FORECAST',
+    'AS FORESEEN',
+    'WITH NO WITNESS'
+  ]);
+}
+
+var EMO_TEMPLATES = [
+  function () { return 'A ' + pick(NOUNS) + ' ' + pick(WITHHELD); },
+  function () { return 'SUBJECT ' + pick(EMO_VERBS) + ' IN ' + pick(MICRO); },
+  function () { return pick(FEELINGS) + ' ' + pick(FEEL_STATES) + ', ' + duration(); },
+  function () { return 'THE ' + pick(NOUNS) + ' IS ' + pick(WITHHELD); },
+  function () { return 'SUBJECT DREAMS OF ' + pick(DREAMS); },
+  function () { return pick(FEELINGS) + ' AND ' + pick(FEELINGS) + ', SIMULTANEOUS'; },
+  function () { return 'SUBJECT ' + pick(EMO_VERBS) + ', ' + duration(); }
+];
+
+var LOG_TEMPLATES = [
+  function () { return pick(DOCS) + ' ' + pick(DEC) + ' — ' + timing(); },
+  function () { return 'SUBJECT ' + pick(LOG_VERBS) + ' THE ' + pick(LOG_OBJS); },
+  function () { return 'SUBJECT ' + pick(LOG_VERBS) + ' THE ' + pick(LOG_OBJS) + ', ' + timing(); },
+  function () { return 'A ' + pick(NOUNS) + ' ' + pick(DEC) + ' ' + timing(); },
+  function () { return 'SUBJECT COUNTS TO ' + ri(3, 400) + ' AND STOPS'; },
+  function () { return pick(DOCS) + ' ' + pick(DEC) + ' BY A THIRD PARTY'; }
+];
+
+function location_() {
+  var r = Math.random();
+  if (r < 0.30) return 'UNDISCLOSED LOCATION';
+  if (r < 0.38) return 'LOCATION WITHHELD';
+  if (r < 0.45) return 'TRANSIT — ' + rand(8.4, 12.1).toFixed(1) + ' KM ABOVE SEA';
+  if (r < 0.51) return ri(1, 89) + '.' + pad(ri(0, 9999), 4) + '° ' + pick(['N','S']) +
+                       '  ' + ri(1, 179) + '.' + pad(ri(0, 9999), 4) + '° ' + pick(['E','W']);
+  if (r < 0.56) return 'SECTOR ' + pick(['UNASSIGNED','04','17','39','C-11']);
+  return pick(CITIES);
+}
+
+var FATALISMS = ['OUTCOME UNCHANGED','SUBJECT UNAWARE','CONVERGENCE RESTORED',
+  'NO INTERVENTION REQUIRED','LOOP INTEGRITY NOMINAL','ALREADY ACCOUNTED FOR',
+  'THE END STATE IS THE SAME','PREDICTED 11 YEARS AGO','NOTHING FOLLOWS FROM THIS'];
+
+function makeEvent(major, forced) {
+  var emotional = Math.random() < 0.55;
+  var line = emotional ? pick(EMO_TEMPLATES)() : pick(LOG_TEMPLATES)();
+  var cls;
+  if (forced) cls = 'OBSERVER INTERFERENCE';
+  else if (major) cls = 'CRITICAL DIVERGENCE';
+  else cls = emotional ? 'EMOTIONAL DIVERGENCE' : 'LOGICAL DIVERGENCE';
+
+  var delta = Math.random() < 0.04 ? '0.0417'
+            : (major ? rand(0.18, 0.94) : rand(0.0004, 0.089)).toFixed(4);
+
+  return {
+    line: line,
+    loc: location_(),
+    cls: cls + '  ·  Δ ' + delta,
+    tag: (major || Math.random() < 0.45 || forced) ? pick(FATALISMS) : null,
+    major: !!major
+  };
+}
+
+function stamp(offset) {
+  var d = new Date((sysEpoch + clock * 1.0 + (offset || 0)) * 1000);
+  return pad(d.getUTCMonth() + 1, 2) + '.' + pad(d.getUTCDate(), 2) + '.' +
+         pad(d.getUTCFullYear() % 100, 2) + '  ' +
+         pad(d.getUTCHours(), 2) + ':' + pad(d.getUTCMinutes(), 2) + ':' + pad(d.getUTCSeconds(), 2);
+}
+
+/* ============================================================
+   GEOMETRY / SIZING
+   ============================================================ */
+
+function makeWobble() {
+  var harm = [[2, .0042], [3, .0031], [5, .0021], [7, .0015], [11, .0011], [17, .0007], [29, .0005], [43, .0003]];
+  var ph = harm.map(function () { return Math.random() * TAU; });
+  for (var i = 0; i < BINS; i++) {
+    var a = i / BINS * TAU, v = 0;
+    for (var j = 0; j < harm.length; j++) v += Math.sin(a * harm[j][0] + ph[j]) * harm[j][1];
+    wob[i] = v;
+  }
+}
+
+var grainSrc = null;
+function buildGrain() {
+  var n = 128, c = document.createElement('canvas');
+  c.width = c.height = n;
+  var g = c.getContext('2d');
+  var img = g.createImageData(n, n);
+  for (var i = 0; i < n * n; i++) {
+    var v = (Math.random() * 255) | 0;
+    img.data[i * 4] = img.data[i * 4 + 1] = img.data[i * 4 + 2] = v;
+    img.data[i * 4 + 3] = 255;
+  }
+  g.putImageData(img, 0, 0);
+  grainSrc = c;
+  grainEl.style.backgroundImage = 'url(' + c.toDataURL() + ')';
+}
+
+function resize() {
+  var oldR = R;
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = stage.clientWidth; H = stage.clientHeight;
+  mainCv.width = Math.round(W * dpr); mainCv.height = Math.round(H * dpr);
+  glowCv.width = Math.round(W * GS); glowCv.height = Math.round(H * GS);
+  cx = W / 2; cy = H / 2;
+  R = Math.min(W, H) * 0.355;
+  u = clamp(Math.min(W, H) / 880, 0.58, 1.6);
+
+  // Displacements are stored in pixels against the radius at injection time.
+  // Peaks outlive a resize by minutes, so carry them across proportionally.
+  if (oldR > 0 && R > 0 && Math.abs(R - oldR) > 0.01) {
+    var k = R / oldR;
+    for (var i = 0; i < BINS; i++) {
+      target[i] *= k; disp[i] *= k; residue[i] *= k; pend[i] *= k;
+    }
+  }
+}
+
+/* ============================================================
+   EVENTS
+   ============================================================ */
+
+// asymptotic ceiling — keeps the tallest needles inside the frame without
+// clipping them all to the same flat height
+function softCap(v, cap) {
+  var knee = cap * 0.7;
+  if (v <= knee) return v;
+  return knee + (cap - knee) * (1 - Math.exp(-(v - knee) / (cap - knee)));
+}
+
+function injectEnergy(centerBin, major) {
+  // criticals are rarer now, so when they land they take a real bite of the globe
+  var width = Math.max(6, Math.floor(BINS * (major ? rand(0.045, 0.100) : rand(0.005, 0.019))));
+  var mag = R * (major ? rand(0.12, 0.19) : rand(0.030, 0.082));
+  var cap = R * 0.34;
+  // how long the disturbance takes to travel from epicentre to the cluster edge
+  var spread = major ? rand(1.15, 1.75) : rand(0.70, 1.10);
+
+  for (var k = -width; k <= width; k++) {
+    var i = (centerBin + k + BINS) % BINS;
+    var t = k / width;
+    var env = Math.pow(Math.cos(t * Math.PI / 2), 1.9);
+    // fresh grain laid down for this event, then left alone
+    hf[i] = Math.random();
+    stipOn[i] = Math.random();
+    stipR[i] = Math.random();
+    stipSz[i] = rand(0.8, 1.7);
+    stipA[i] = (Math.random() * 6) | 0;
+    var spike = softCap(env * mag * (0.22 + 0.78 * Math.pow(Math.random(), 1.35)), cap);
+    // ease-out travel: the wave slows as it reaches the edges
+    var reach = Math.pow(Math.abs(t), 0.75);
+    stage_(i, spike, clock + reach * spread + rand(0, 0.09));
+  }
+
+  // needles — the tall thin ones. They arrive after the swell, not with it.
+  var needles = major ? ri(9, 16) : ri(1, 3);
+  var tipBin = centerBin, tipVal = 0;
+  for (var n = 0; n < needles; n++) {
+    var off = Math.round(rand(-1, 1) * width * 0.75);
+    var ii = (centerBin + off + BINS) % BINS;
+    var v = softCap(mag * rand(1.25, 2.25), cap);
+    var when = clock + Math.pow(Math.abs(off / width), 0.75) * spread + rand(0.25, 0.55);
+    stage_(ii, v, when);
+    stage_((ii - 1 + BINS) % BINS, v * 0.45, when);
+    stage_((ii + 1) % BINS, v * 0.45, when);
+    if (v > tipVal) { tipVal = v; tipBin = ii; }
+  }
+  return { bin: tipBin, height: tipVal, major: major };
+}
+
+// move any staged energy that has now "happened" into the live target
+function releasePending(force) {
+  for (var p = 0; p < BINS; p++) {
+    if (pend[p] > 0 && (force || clock >= arriveAt[p])) {
+      if (pend[p] > target[p]) target[p] = pend[p];
+      pend[p] = 0;
+    }
+  }
+}
+
+function freeSlot(side) {
+  var used = {};
+  for (var i = 0; i < labels.length; i++) if (labels[i].side === side) used[labels[i].slot] = 1;
+  for (var s = 0; s < 3; s++) if (!used[s]) return s;
+  return -1;
+}
+
+function fireEvent(opts) {
+  opts = opts || {};
+  var major = opts.major !== undefined ? opts.major : (Math.random() < 0.055);
+  var bin = opts.bin !== undefined ? opts.bin : (Math.random() * BINS) | 0;
+
+  var res = injectEnergy(bin, major);
+  observed++;
+  fidelity = clamp(fidelity - (major ? rand(0.006, 0.024) : rand(0.0002, 0.0013)), 99.0, 100);
+  if (major) flash = 1;
+
+  if (state.labels && labels.length < 3) {
+    var a = res.bin / BINS * TAU - Math.PI / 2;
+    var side = Math.cos(a) > 0 ? 'left' : 'right';
+    var slot = freeSlot(side);
+    if (slot === -1) { side = side === 'left' ? 'right' : 'left'; slot = freeSlot(side); }
+    if (slot !== -1) {
+      var ev = makeEvent(major, !!opts.forced);
+      ev.bin = res.bin;
+      ev.side = side;
+      ev.slot = slot;
+      ev.stamp = stamp(0);
+      ev.born = clock;
+      ev.life = major ? 24 : 17;
+      ev.jitter = rand(-0.035, 0.035);
+      labels.push(ev);
+    }
+  }
+}
+
+function scheduleNext() {
+  var rg = TEMPOS[state.tempo];
+  nextEventAt = clock + rand(rg[0], rg[1]);
+}
+
+/* ============================================================
+   UPDATE
+   ============================================================ */
+
+function update(dt) {
+  clock += dt;
+
+  releasePending(false);
+
+  var riseK = 1 - Math.exp(-dt * RISE);
+  var tDecay = Math.exp(-dt / 42);
+  var rDecay = Math.exp(-dt / 900);   // scars now outlast the hour
+
+  for (var i = 0; i < BINS; i++) {
+    target[i] *= tDecay;
+    disp[i] += (target[i] - disp[i]) * riseK;
+    var r = residue[i] * rDecay;
+    var f = disp[i] * 0.22;
+    residue[i] = r > f ? r : f;
+  }
+
+  flash *= Math.exp(-dt / 2.4);
+
+  // convergence reasserts itself between divergences
+  fidelity += (100 - fidelity) * (1 - Math.exp(-dt / 600));
+
+  if (clock >= nextEventAt) { fireEvent(); scheduleNext(); }
+
+  for (var j = labels.length - 1; j >= 0; j--) {
+    if (clock - labels[j].born > labels[j].life + 2.2) labels.splice(j, 1);
+  }
+}
+
+/* ============================================================
+   DRAW
+   ============================================================ */
+
+function ink(alpha) {
+  return state.light ? 'rgba(16,16,18,' + alpha + ')' : 'rgba(244,244,241,' + alpha + ')';
+}
+
+function setLS(ctx, px) {
+  try { ctx.letterSpacing = px + 'px'; } catch (e) {}
+}
+
+function fontOf(weight, size) {
+  return weight + ' ' + size.toFixed(1) + "px 'Arial Narrow','Helvetica Neue',Helvetica,Arial,sans-serif";
+}
+
+// break a long generated line so it never overruns the contour
+function wrapLine(txt, maxW, font, ls) {
+  mctx.font = font; setLS(mctx, ls);
+  if (mctx.measureText(txt).width <= maxW) { setLS(mctx, 0); return [txt]; }
+  var words = txt.split(' '), out = [], cur = '';
+  for (var i = 0; i < words.length; i++) {
+    var t = cur ? cur + ' ' + words[i] : words[i];
+    if (cur && mctx.measureText(t).width > maxW) { out.push(cur); cur = words[i]; }
+    else cur = t;
+  }
+  if (cur) out.push(cur);
+  setLS(mctx, 0);
+  return out.slice(0, 3);
+}
+
+function drawFrame(t) {
+  mctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  mctx.clearRect(0, 0, W, H);
+  gctx.setTransform(GS, 0, 0, GS, 0, 0);
+  gctx.clearRect(0, 0, W, H);
+  mctx.lineCap = 'round';
+  gctx.lineCap = 'round';
+
+  var rot = t * 0.0032;
+  var breathe = 1 + 0.0035 * Math.sin(t * TAU / 17) + flash * 0.004;
+
+  // ---- contour ----
+  var path = new Path2D();
+  for (var i = 0; i <= BINS; i++) {
+    var j = i % BINS;
+    var a = j / BINS * TAU - Math.PI / 2 + rot;
+    var h = (disp[j] + residue[j]) * (0.48 + 0.52 * hf[j]);
+    var rr = R * breathe * (1 + wob[j]) + h + fine[j];
+    var x = cx + Math.cos(a) * rr, y = cy + Math.sin(a) * rr;
+    if (i === 0) path.moveTo(x, y); else path.lineTo(x, y);
+  }
+  path.closePath();
+
+  // ---- radial hairs in disturbed regions ----
+  var hairs = new Path2D();
+  var thresh = R * 0.005;
+  for (var m = 0; m < BINS; m++) {
+    var hh = disp[m] + residue[m];
+    if (hh < thresh) continue;
+    var aa = m / BINS * TAU - Math.PI / 2 + rot;
+    var base = R * breathe * (1 + wob[m]);
+    // slow per-hair breathing (~0.09-0.23 Hz), not per-frame static
+    var br = 0.5 + 0.5 * Math.sin(t * hairRt[m] + hairPh[m]);
+    var out = base + hh * (0.48 + 0.52 * hf[m]) * (0.74 + 0.30 * br);
+    var ca = Math.cos(aa), sa = Math.sin(aa);
+    hairs.moveTo(cx + ca * base * 0.994, cy + sa * base * 0.994);
+    hairs.lineTo(cx + ca * out, cy + sa * out);
+  }
+
+  // glow pass
+  gctx.strokeStyle = ink(0.85);
+  gctx.lineWidth = 3.2;
+  gctx.stroke(path);
+  gctx.lineWidth = 2.0;
+  gctx.stroke(hairs);
+
+  // main: soft under-stroke
+  mctx.strokeStyle = ink(0.16);
+  mctx.lineWidth = 2.6 * u;
+  mctx.save(); mctx.translate(0.7, -0.5); mctx.stroke(path); mctx.restore();
+  mctx.save(); mctx.translate(-0.6, 0.6); mctx.stroke(path); mctx.restore();
+
+  // main: hairs
+  mctx.strokeStyle = ink(0.30);
+  mctx.lineWidth = 0.85 * u;
+  mctx.stroke(hairs);
+
+  // main: crisp contour
+  mctx.strokeStyle = ink(0.92);
+  mctx.lineWidth = 1.15 * u;
+  mctx.stroke(path);
+
+  // ---- stipple around active peaks ----
+  // Fixed grains that ride the spike as it grows, rather than twinkling.
+  var gInk = [];
+  for (var gi = 0; gi < 6; gi++) gInk.push(ink(0.20 + gi * 0.075));
+  var lastA = -1;
+  for (var s = 0; s < BINS; s++) {
+    var sh = disp[s] + residue[s];
+    if (sh < thresh * 1.6) continue;
+    if (stipOn[s] > 0.12) continue;
+    if (stipA[s] !== lastA) { mctx.fillStyle = gInk[stipA[s]]; lastA = stipA[s]; }
+    var sa2 = s / BINS * TAU - Math.PI / 2 + rot;
+    var sr = R * breathe * (1 + wob[s]) + stipR[s] * sh * 1.15;
+    var gz = stipSz[s] * u;
+    mctx.fillRect(cx + Math.cos(sa2) * sr, cy + Math.sin(sa2) * sr, gz, gz);
+  }
+
+  drawLabels(rot, breathe);
+  drawHUD();
+}
+
+function drawLabels(rot, breathe) {
+  for (var i = 0; i < labels.length; i++) {
+    var L = labels[i];
+    var age = clock - L.born;
+    var fout = 1 - clamp((age - L.life) / 2.2, 0, 1);
+
+    // the system annotates only once the world has finished reacting
+    var wipe = clamp((age - 1.35) / 0.95, 0, 1);
+    wipe = 1 - Math.pow(1 - wipe, 3);
+    var fin = clamp((age - 1.95) / 0.85, 0, 1);
+
+    var lineA = wipe * fout;
+    var alpha = fin * fout;
+    if (lineA <= 0.001 && alpha <= 0.001) continue;
+
+    // peak tip
+    var a = L.bin / BINS * TAU - Math.PI / 2 + rot;
+    var h = (disp[L.bin] + residue[L.bin]) * (0.48 + 0.52 * hf[L.bin]);
+    var rr = R * breathe * (1 + wob[L.bin]) + h;
+    var tx = cx + Math.cos(a) * rr, ty = cy + Math.sin(a) * rr;
+
+    // text metrics
+    var s1 = 11.5 * u, s2 = 21 * u, s3 = 16.5 * u, s4 = 10.5 * u;
+
+    // How much room is there inside the circle at this slot? The chord
+    // narrows toward the poles, so the wrap width has to follow it.
+    var slotY = cy + (L.slot - 1) * R * 0.34 + L.jitter * R;
+    var estH = 5.4 * 15 * 1.32 * u;
+    var dyMax = Math.abs(slotY - cy) + estH / 2;
+    var half = Math.sqrt(Math.max(0, R * R - dyMax * dyMax)) * 0.88;
+    var avail = Math.max(150 * u, half * 1.72);
+
+    var lines = [{ txt: L.stamp, size: s1, weight: 400, al: 0.42, ls: 1.6 * u }];
+    var wrapped = wrapLine(L.line, avail, fontOf(700, s2), 0.4 * u);
+    for (var wi = 0; wi < wrapped.length; wi++) {
+      lines.push({ txt: wrapped[wi], size: s2, weight: 700, al: 0.96, ls: 0.4 * u });
+    }
+    lines.push({ txt: L.loc, size: s3, weight: 400, al: 0.50, ls: 0.9 * u });
+    lines.push({ txt: L.cls, size: s4, weight: 700, al: 0.62, ls: 1.9 * u });
+    if (L.tag) lines.push({ txt: L.tag, size: s4, weight: 400, al: 0.34, ls: 1.9 * u });
+
+    var maxW = 0, blockH = 0;
+    for (var q = 0; q < lines.length; q++) {
+      mctx.font = fontOf(lines[q].weight, lines[q].size);
+      setLS(mctx, lines[q].ls);
+      var w = mctx.measureText(lines[q].txt).width;
+      setLS(mctx, 0);
+      if (w > maxW) maxW = w;
+      blockH += lines[q].size * 1.32;
+    }
+
+    // place inside the ring, then pull back onto the chord if it overhangs
+    var lx = L.side === 'left' ? cx - R * 0.62 : cx + R * 0.62 - maxW;
+    var hi = cx + half - maxW;
+    if (hi > cx - half) lx = clamp(lx, cx - half, hi);
+    else lx = cx - maxW / 2;
+    lx = clamp(lx, 14, Math.max(14, W - maxW - 14));
+    var ly = clamp(slotY - blockH / 2, 16, Math.max(16, H - blockH - 16));
+
+    // ---- leader line ----
+    var ax = L.side === 'left' ? lx + maxW + 16 * u : lx - 16 * u;
+    var ay = ly + s1 * 0.9;
+    var ex = ax + (L.side === 'left' ? 1 : -1) * Math.min(70 * u, Math.abs(tx - ax) * 0.45);
+    var pts = [[ax, ay], [ex, ay], [tx, ty]];
+
+    // total length for the wipe
+    var segLen = [], total = 0;
+    for (var p = 0; p < pts.length - 1; p++) {
+      var d = Math.hypot(pts[p + 1][0] - pts[p][0], pts[p + 1][1] - pts[p][1]);
+      segLen.push(d); total += d;
+    }
+    var want = total * wipe;
+
+    mctx.strokeStyle = ink(0.30 * lineA);
+    mctx.lineWidth = 0.9 * u;
+    mctx.beginPath();
+    mctx.moveTo(pts[0][0], pts[0][1]);
+    var run = 0;
+    for (var p2 = 0; p2 < segLen.length; p2++) {
+      if (run + segLen[p2] <= want) {
+        mctx.lineTo(pts[p2 + 1][0], pts[p2 + 1][1]);
+        run += segLen[p2];
+      } else {
+        var f = (want - run) / segLen[p2];
+        mctx.lineTo(pts[p2][0] + (pts[p2 + 1][0] - pts[p2][0]) * f,
+                    pts[p2][1] + (pts[p2 + 1][1] - pts[p2][1]) * f);
+        break;
+      }
+    }
+    mctx.stroke();
+
+    // bracket tick at the anchor
+    mctx.beginPath();
+    mctx.moveTo(ax, ay - 7 * u);
+    mctx.lineTo(ax, ay + 2 * u);
+    mctx.stroke();
+
+    // tip node on a major event
+    if (L.major && wipe > 0.98) {
+      mctx.strokeStyle = ink(0.55 * lineA);
+      mctx.beginPath();
+      mctx.arc(tx, ty, 3.2 * u, 0, TAU);
+      mctx.stroke();
+    }
+
+    // ---- text ----
+    var yy = ly;
+    for (var r2 = 0; r2 < lines.length; r2++) {
+      var Ln = lines[r2];
+      mctx.font = fontOf(Ln.weight, Ln.size);
+      setLS(mctx, Ln.ls);
+      mctx.fillStyle = ink(Ln.al * alpha);
+      mctx.textBaseline = 'top';
+      mctx.fillText(Ln.txt, lx, yy);
+      setLS(mctx, 0);
+      yy += Ln.size * 1.32;
+    }
+  }
+}
+
+function drawHUD() {
+  var pd = 22 * u;
+  mctx.textBaseline = 'top';
+
+  mctx.font = "700 " + (11 * u).toFixed(1) + "px 'Arial Narrow','Helvetica Neue',Helvetica,Arial,sans-serif";
+  setLS(mctx, 2.4 * u);
+  mctx.fillStyle = ink(0.55);
+  mctx.fillText("'SOLOMON'  BUILD 0.06", pd, pd);
+  setLS(mctx, 0);
+
+  mctx.font = "400 " + (10 * u).toFixed(1) + "px 'Arial Narrow','Helvetica Neue',Helvetica,Arial,sans-serif";
+  setLS(mctx, 2.0 * u);
+  mctx.fillStyle = ink(0.28);
+  mctx.fillText('DIVERGENCE MONITOR  ·  ALL SECTORS', pd, pd + 15 * u);
+  setLS(mctx, 0);
+
+  // bottom-left
+  mctx.textBaseline = 'bottom';
+  mctx.font = "700 " + (10.5 * u).toFixed(1) + "px 'Arial Narrow','Helvetica Neue',Helvetica,Arial,sans-serif";
+  setLS(mctx, 2.2 * u);
+  mctx.fillStyle = ink(0.44);
+  mctx.fillText('DIVERGENCES OBSERVED  ' + pad4(observed), pd, H - pd - 14 * u);
+  setLS(mctx, 2.0 * u);
+  mctx.font = "400 " + (10 * u).toFixed(1) + "px 'Arial Narrow','Helvetica Neue',Helvetica,Arial,sans-serif";
+  mctx.fillStyle = ink(0.24);
+  mctx.fillText('PROJECTED OUTCOME  ·  UNCHANGED', pd, H - pd);
+  setLS(mctx, 0);
+
+  // bottom-right
+  mctx.textAlign = 'right';
+  mctx.font = "700 " + (10.5 * u).toFixed(1) + "px 'Arial Narrow','Helvetica Neue',Helvetica,Arial,sans-serif";
+  setLS(mctx, 2.2 * u);
+  mctx.fillStyle = ink(0.44);
+  mctx.fillText(stamp(0), W - pd, H - pd - 14 * u);
+  mctx.font = "400 " + (10 * u).toFixed(1) + "px 'Arial Narrow','Helvetica Neue',Helvetica,Arial,sans-serif";
+  setLS(mctx, 2.0 * u);
+  mctx.fillStyle = ink(0.24);
+  mctx.fillText('FIDELITY  ' + fidelity.toFixed(4) + ' %', W - pd, H - pd);
+  setLS(mctx, 0);
+  mctx.textAlign = 'left';
+
+  if (frozen) {
+    mctx.textAlign = 'right';
+    mctx.textBaseline = 'top';
+    mctx.font = "700 " + (11 * u).toFixed(1) + "px 'Arial Narrow','Helvetica Neue',Helvetica,Arial,sans-serif";
+    setLS(mctx, 2.4 * u);
+    mctx.fillStyle = ink(0.5);
+    mctx.fillText('— HOLD —', W - pd, pd);
+    setLS(mctx, 0);
+    mctx.textAlign = 'left';
+  }
+}
+
+function pad4(n) { return pad(Math.min(n, 99999), 4); }
+
+/* ============================================================
+   LOOP
+   ============================================================ */
+
+var last = performance.now();
+var vt = 0;           // virtual render time — stops when held
+var frozen = false;
+
+function frame(now) {
+  var dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  if (!frozen) { vt += dt; update(dt); }
+  drawFrame(vt);
+  requestAnimationFrame(frame);
+}
+
+/* ============================================================
+   CAPTURE
+   Re-renders the ring at scale rather than upscaling the screen
+   canvas, so hairs and type stay sharp. Glow is reused from the
+   low-res layer and blurred up, exactly as CSS does it live.
+   ============================================================ */
+
+var toastEl = document.getElementById('toast');
+var toastTimer = null;
+function toast(msg, ms) {
+  toastEl.textContent = msg;
+  toastEl.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(function () { toastEl.classList.remove('show'); }, ms || 2200);
+}
+
+function pickScale() {
+  // stay sharp, but keep the file inside Discord's upload ceiling
+  var s = Math.min(3, Math.sqrt(10.0e6 / Math.max(1, W * H)));
+  s = Math.max(1, s);
+  while ((W * s > 8000 || H * s > 8000) && s > 1) s -= 0.25;
+  return Math.round(s * 4) / 4;
+}
+
+function renderExport(S) {
+  var WE = Math.round(W * S), HE = Math.round(H * S);
+  var ex = document.createElement('canvas');
+  ex.width = WE; ex.height = HE;
+  var ec = ex.getContext('2d');
+
+  // 1. ground
+  ec.fillStyle = state.light ? '#f2f1ee' : '#050506';
+  ec.fillRect(0, 0, WE, HE);
+
+  // 2. glow — same low-res source, blur scaled to match
+  try { ec.filter = 'blur(' + (7 * S).toFixed(2) + 'px)'; } catch (e) {}
+  ec.globalAlpha = state.light ? 0.38 : 0.5;
+  ec.drawImage(glowCv, 0, 0, WE, HE);
+  ec.globalAlpha = 1;
+  try { ec.filter = 'none'; } catch (e) {}
+
+  // 3. the ring itself, re-rendered at export resolution
+  var keepW = mainCv.width, keepH = mainCv.height, keepDpr = dpr;
+  mainCv.width = WE; mainCv.height = HE;
+  dpr = S;
+  drawFrame(vt);
+  ec.drawImage(mainCv, 0, 0);
+  mainCv.width = keepW; mainCv.height = keepH;
+  dpr = keepDpr;
+  drawFrame(vt);            // restore the on-screen canvas immediately
+
+  // 4. grain
+  if (state.grain && grainSrc) {
+    var pat = ec.createPattern(grainSrc, 'repeat');
+    try { pat.setTransform(new DOMMatrix([S, 0, 0, S, 0, 0])); } catch (e) {}
+    ec.globalCompositeOperation = state.light ? 'multiply' : 'screen';
+    ec.globalAlpha = state.light ? 0.07 : 0.055;
+    ec.fillStyle = pat;
+    ec.fillRect(0, 0, WE, HE);
+    ec.globalAlpha = 1;
+    ec.globalCompositeOperation = 'source-over';
+  }
+
+  // 5. vignette
+  ec.save();
+  ec.translate(WE / 2, HE / 2);
+  ec.scale(WE / 2 * 1.414, HE / 2 * 1.414);
+  var vg = ec.createRadialGradient(0, 0, state.light ? 0.48 : 0.45, 0, 0, 1);
+  vg.addColorStop(0, state.light ? 'rgba(120,118,112,0)' : 'rgba(0,0,0,0)');
+  vg.addColorStop(1, state.light ? 'rgba(120,118,112,0.28)' : 'rgba(0,0,0,0.55)');
+  ec.fillStyle = vg;
+  ec.fillRect(-1, -1, 2, 2);
+  ec.restore();
+
+  return ex;
+}
+
+function capture() {
+  var S = pickScale();
+  var ex;
+  try {
+    ex = renderExport(S);
+  } catch (err) {
+    toast('CAPTURE FAILED');
+    return;
+  }
+  var dims = ex.width + '×' + ex.height;
+
+  ex.toBlob(function (blob) {
+    if (!blob) { toast('CAPTURE FAILED'); return; }
+    var name = 'divergence_' + stamp(0).replace(/[.: ]+/g, '-') + '.png';
+
+    function download() {
+      try {
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url; a.download = name;
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
+        toast('SAVED  ' + dims);
+      } catch (e2) {
+        toast('CAPTURE BLOCKED');
+      }
+    }
+
+    // clipboard first — straight into Discord with a paste
+    if (window.ClipboardItem && navigator.clipboard && navigator.clipboard.write) {
+      navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })])
+        .then(function () { toast('COPIED  ' + dims + '  ·  PASTE ANYWHERE'); })
+        .catch(download);
+    } else {
+      download();
+    }
+  }, 'image/png');
+}
+
+/* ============================================================
+   CONTROLS
+   ============================================================ */
+
+var bTempo = document.getElementById('bTempo');
+var bLabels = document.getElementById('bLabels');
+var bPolarity = document.getElementById('bPolarity');
+var bGrain = document.getElementById('bGrain');
+var bPulse = document.getElementById('bPulse');
+var bHold = document.getElementById('bHold');
+var bShot = document.getElementById('bShot');
+var bFull = document.getElementById('bFull');
+var ctl = document.getElementById('ctl');
+
+function syncUI() {
+  bTempo.textContent = 'TEMPO · ' + state.tempo;
+  bLabels.textContent = 'LABELS · ' + (state.labels ? 'ON' : 'OFF');
+  bPolarity.textContent = 'POLARITY · ' + (state.light ? 'POS' : 'NEG');
+  bGrain.textContent = 'GRAIN · ' + (state.grain ? 'ON' : 'OFF');
+  bHold.textContent = frozen ? 'RESUME' : 'HOLD';
+  bHold.classList.toggle('on', frozen);
+  stage.classList.toggle('light', state.light);
+  grainEl.classList.toggle('off', !state.grain);
+  persist();
+}
+
+function setFrozen(v) {
+  frozen = v;
+  syncUI();
+  if (frozen) toast('HELD  ·  SPACE TO RESUME');
+}
+
+bTempo.addEventListener('click', function () {
+  var i = TEMPO_ORDER.indexOf(state.tempo);
+  state.tempo = TEMPO_ORDER[(i + 1) % TEMPO_ORDER.length];
+  scheduleNext(); syncUI();
+});
+bLabels.addEventListener('click', function () {
+  state.labels = !state.labels;
+  if (!state.labels) labels.length = 0;
+  syncUI();
+});
+bPolarity.addEventListener('click', function () { state.light = !state.light; syncUI(); });
+bGrain.addEventListener('click', function () { state.grain = !state.grain; syncUI(); });
+bPulse.addEventListener('click', function (e) {
+  e.stopPropagation();
+  if (frozen) setFrozen(false);
+  fireEvent({ major: true, forced: true });
+});
+bHold.addEventListener('click', function (e) { e.stopPropagation(); setFrozen(!frozen); });
+bShot.addEventListener('click', function (e) { e.stopPropagation(); capture(); });
+
+window.addEventListener('keydown', function (e) {
+  if (e.target && e.target.tagName === 'BUTTON') return;
+  if (e.code === 'Space' || e.key === ' ') {
+    e.preventDefault();
+    setFrozen(!frozen);
+  } else if (e.key === 'c' || e.key === 'C') {
+    capture();
+  }
+});
+bFull.addEventListener('click', function () {
+  if (document.fullscreenElement) document.exitFullscreen();
+  else if (stage.requestFullscreen) stage.requestFullscreen();
+});
+
+// reveal controls on pointer movement, hide when idle
+var hideTimer = null;
+function wake() {
+  ctl.classList.add('show');
+  clearTimeout(hideTimer);
+  hideTimer = setTimeout(function () { ctl.classList.remove('show'); }, 2600);
+}
+window.addEventListener('pointermove', wake);
+ctl.addEventListener('pointerenter', function () { clearTimeout(hideTimer); ctl.classList.add('show'); });
+
+// click the field to poke the system. it will not help.
+stage.addEventListener('click', function (e) {
+  if (e.target.tagName === 'BUTTON') return;
+  var a = Math.atan2(e.clientY - cy, e.clientX - cx) + Math.PI / 2;
+  var bin = ((Math.round(a / TAU * BINS) % BINS) + BINS) % BINS;
+  fireEvent({ bin: bin, major: Math.random() < 0.3, forced: true });
+});
+
+window.addEventListener('resize', resize);
+document.addEventListener('fullscreenchange', function () { setTimeout(resize, 60); });
+
+/* ============================================================
+   BOOT
+   ============================================================ */
+
+makeWobble();
+for (var b = 0; b < BINS; b++) {
+  fine[b] = (Math.random() * 2 - 1) * 0.9;
+  hf[b] = Math.random();
+  hairPh[b] = Math.random() * TAU;
+  hairRt[b] = rand(0.55, 1.45);
+  stipOn[b] = Math.random();
+  stipR[b] = Math.random();
+  stipSz[b] = rand(0.8, 1.7);
+  stipA[b] = (Math.random() * 6) | 0;
+}
+buildGrain();
+resize();
+syncUI();
+
+// seed the ring so it never opens as a clean circle
+for (var sd = 0; sd < 9; sd++) {
+  var seedBin = (Math.random() * BINS) | 0;
+  injectEnergy(seedBin, Math.random() < 0.2);
+}
+releasePending(true);
+for (var q3 = 0; q3 < BINS; q3++) {
+  residue[q3] = target[q3] * rand(0.10, 0.34);
+  target[q3] = 0;
+}
+
+clock = 0;
+nextEventAt = rand(2.0, 4.5);
+requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>
